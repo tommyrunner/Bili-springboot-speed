@@ -6,7 +6,7 @@
   + 下载安装jdk:https://www.oracle.com/java/technologies/javase-downloads.html
   + 下载安装idea:https://www.jetbrains.com/idea/
 + Rap2平台:http://rap2.taobao.org/
-
+  
 + 后端一般做什么事?
   + 根据前端要求提供数据(json)
   + 实时提供数据(socket)
@@ -339,5 +339,707 @@ public class MyUserController {
     }
     ```
 
+
+## 5.spring技巧
+
++ **Transactional:事务回滚**
+
+  ```java
+  //删除
+  @Transactional
+  public  void deleteByIdMyUser(Integer id){
+      sqlMyUserDao.deleteById(id);
+      int i = 1/0;
+  }
+  ```
+
++ **filter过滤器**
+
+  文件目录:config->MyFilter
+
+  ```java
+  @Slf4j
+  @Component
+  public class MyFilter implements Filter {
+  
+  
+      @Override
+      public void doFilter(ServletRequest servletRequest, ServletResponse servletResponse, FilterChain filterChain)
+              throws IOException, ServletException {
+          HttpServletRequest request = (HttpServletRequest) servletRequest;       //接收请求参数
+          HttpServletResponse response = (HttpServletResponse) servletResponse;   //用于请求
+          response.setHeader("Access-Control-Allow-Origin", "*");
+          // 这个allow-headers要配为*，这样才能允许所有的请求头 --- update by zxy  in 2018-10-19
+          response.setHeader("Access-Control-Allow-Headers", "*");
+          response.setHeader("Access-Control-Allow-Methods", "PUT,POST,GET,DELETE,OPTIONS");
+  
+          log.info("----"+request.getRequestURI());
+  
+          filterChain.doFilter(servletRequest, servletResponse);
+      }
+  }
+  
+  ```
+
+  + 跨域解决
+
+    + core:服务器直接修改允许跨域
+
+      ```java
+      /**
+       * 过滤跨域配置类
+       */
+      @Configuration
+      public class CorsConfig {
+          private CorsConfiguration buildConfig(){
+              CorsConfiguration corsConfiguration = new CorsConfiguration();
+              corsConfiguration.addAllowedOrigin("*");//1允许任何域名使用
+              corsConfiguration.addAllowedHeader("*");//2允许任何头
+              corsConfiguration.addAllowedMethod("*");//允许任何方法(post、get)
+              return  corsConfiguration;
+          }
+          @Bean
+          public CorsFilter corsFilter(){
+              UrlBasedCorsConfigurationSource source = new UrlBasedCorsConfigurationSource();
+              source.registerCorsConfiguration("/**",buildConfig());  //4添加到配置
+              return new CorsFilter(source);
+          }
+      }
+      ```
+
+    + jsonp:服务器允许jsonp调用
+
+    + 代理:自己搭一个服务器,调用跨域接口,并返回给自己
+
+  
+
++ 使用@interface自定义注解,实现防止重复点击
+
+  + 准备一个注解
+
+    文件目录:annotation->ClickLock
+  
+  ```java
+  
+  @Target({ElementType.METHOD})
+  /**
+   * @Target(ElementType.TYPE)   //接口、类、枚举、注解
+   * @Target(ElementType.FIELD) //字段、枚举的常量
+   * @Target(ElementType.METHOD) //方法
+   * @Target(ElementType.PARAMETER) //方法参数
+   * @Target(ElementType.CONSTRUCTOR)  //构造函数
+   * @Target(ElementType.LOCAL_VARIABLE)//局部变量
+   * @Target(ElementType.ANNOTATION_TYPE)//注解
+   * @Target(ElementType.PACKAGE) ///包
+   */
+  @Retention(RetentionPolicy.RUNTIME)
+  @Deprecated
+  @Inherited
+  public @interface ClickLock {
+      /**
+       * 定义属性
+       */
+      String key() default "";
+  }
+  ```
+  
++ 实现注解的逻辑，并实现**不能重复点击的业务**
+  
+  文件目录:aop->ClickLockTo
+  
+    ```java
+    package com.example.testdemo.aop;
     
+    
+    @Configuration
+    @Aspect
+    public class ClickLockTo {
+        //准备一个缓存池
+        private static final Map<String,Object> CACHES = new HashMap<>();
+    
+        //接受到所有的注解
+        //拦截所有的public方法并且注释为ClickLock
+        //注意：你注解了多少个方法就会调用几次
+        @Around("execution(public * *(..))&&@annotation(com.example.testdemo.annotation.ClickLock)")
+        public Object interceptor(ProceedingJoinPoint pjp){
+            //获取注解中的参数和方法里的参数
+            MethodSignature signature = (MethodSignature) pjp.getSignature();
+            Method method = signature.getMethod();
+            ClickLock clickLock = method.getAnnotation(ClickLock.class);
+            //获取的参数集合pjp.getArgs():所有注解的方法里的参数
+            //clickLock.key()：获取注解上的属性值
+            String key = clickLock.key();
+            if (!StringUtils.isEmpty(key)){ //不能为空
+                if (CACHES.get(key)!=null){
+                    //找到了，里面存入过（刚刚访问过）
+                    System.out.println("----------重新插入");
+                    throw new RuntimeException("不能重复点击");
+    
+                }else {
+                    //没存过
+                    CACHES.put(key,key);
+                    System.out.println("----------插入");
+                    new Thread(){
+                        @SneakyThrows
+                        @Override
+                        public void run() {
+                            sleep(1000);
+                            CACHES.remove(key);
+                        }
+                    }.start();
+                }
+            }
+            try {
+                return pjp.proceed();  //继续执行
+            } catch (Throwable throwable) {
+                throwable.printStackTrace();
+                throw new RuntimeException("错误");
+            }
+        }
+    }
+    ```
+  
+    > 注意：
+    >
+    > + 流程
+    >   + 准备一个map代替缓存池CACHES
+    >   + 获取所有的注解参数并存入缓存进行判定interceptor
+    >     + Around：扫描-拦截所有的public方法并且注释为ClickLock
+    >   + 插入后,记得设置时间删除
+  
+  + 使用这个注解
+  
+    ```java
+    @ClickLock(key = "MyUserService/findMyUserAll")
+    public List<SqlMyUser> findMyUserAll(){
+        return sqlMyUserDao.findAll();
+    }
+    ```
+  
++ **ExceptionHandler全局错误管理**
+
+  + 准备一个管理类
+
+    文件目录:config->ErrorManage
+  
+    ```java
+    @RestControllerAdvice   //RestControllerAdvice controller 增强器
+    public class ErrorManage {
+        //监听只要spring有Exception错误就调用这个方法
+        @ExceptionHandler(RuntimeException.class)
+        public Map<String, String> SysException(RuntimeException e) {
+            Map<String,String> map = new HashMap<>();
+            map.put("error","服务器错误:"+e.toString());
+            return map;
+        }
+  }
+    ```
+
+  + 抛出错误
+  
+    ```java
+    throw new RuntimeException("不能重复点击");
+    ```
+  
+    > + 注意拦截范围-一般处理用户访问发生的,service里
+
+## 6.swagger2自动生成接口文档器
+
++ 引入
+
+  ```xml
+  <!--引入swagger2-->
+  <dependency>
+      <groupId>io.springfox</groupId>
+      <artifactId>springfox-swagger2</artifactId>
+      <version>2.9.2</version>
+  </dependency>
+  <!--引入swagger2的ui-->
+  <dependency>
+      <groupId>io.springfox</groupId>
+      <artifactId>springfox-swagger-ui</artifactId>
+      <version>2.9.2</version>
+  </dependency>
+  ```
+
++ 配置swagger2
+
+  + config文件里-->SwaggerConfig
+
+  ```java
+  @Configuration
+  @EnableSwagger2
+  public class SwaggerConfig {
+      @Bean
+      public Docket createRestApi() {
+          return new Docket(DocumentationType.SWAGGER_2)
+                  .apiInfo(apiInfo())
+                  .select()
+                  .apis(RequestHandlerSelectors.basePackage("com.xxx.xxxx"))    //api接口包扫描路径
+                  .paths(PathSelectors.any()) // 可以根据url路径设置哪些请求加入文档，忽略哪些请求
+                  .build();
+      }
+  
+      private ApiInfo apiInfo() {
+          return new ApiInfoBuilder()
+                  .title("测试Swgger生产文档") //设置文档的标题
+                  .description("文档描述") // 设置文档的描述
+                  .version("1.0.0") // 设置文档的版本信息-> 1.0.0 Version information
+                  .termsOfServiceUrl("http://www.baidu.com") // 设置文档的License信息->1.3 License information
+                  .build();
+      }
+  }
+  ```
+
+  > 注意apis是扫描自己的包文件，得填自己的
+
++ 配置spring的接口
+
+  ```java
+  @RestController
+  @Api(value = "用户接口")
+  public class MyUserController {
+      @Autowired
+      MyUserService myUserService;
+  
+      //获取用户所有数据接口
+      @GetMapping("/getMyUserAll")
+      @ApiOperation(value = "查询所有用户")
+      public List<SqlMyUser> getMyUserAll(){
+          return myUserService.findMyUserAll();
+      }
+      //添加用户:并且传递json字符串
+      @PostMapping("/addMyUser")
+      @ApiOperation(value = "添加用户")
+      public String addMyUser(@ApiParam(value = "用户对象") @RequestBody SqlMyUser sqlMyUser){
+          SqlMyUser user = myUserService.saveMyUser(sqlMyUser);
+          if(null==user) return "添加失败!";
+          return  "添加成功!";
+      }
+      //删除用户
+      @PostMapping("deleteMyUser")
+      @ApiOperation(value = "删除用户")
+      public String deleteMyUser(@ApiParam(value = "用户唯一id")Integer id){
+          myUserService.deleteByIdMyUser(id);
+          return "删除成功!";
+      }
+  
+  }
+  ```
+
+  > 注意：
+  >
+  > + @Api：修饰整个类，描述Controller的作用
+  >
+  > + @ApiOperation：描述一个类的一个方法，或者说一个接口
+  >
+  > + @ApiParam：单个参数描述
+  >
+  > + @ApiModelProperty：用对象来接收参数(springboot2.x使用ApiModelProperty)
+  >
+  > + @ApiProperty：用对象接收参数时，描述对象的一个字段
+  >
+  > + @ApiResponse：HTTP响应其中1个描述
+  >
+  > + @ApiResponses：HTTP响应整体描述
+  >
+  > + @ApiIgnore：使用该注解忽略这个API
+  >
+  > + @ApiError ：发生错误返回的信息
+  >
+  > + @ApiImplicitParam：描述一个请求参数，可以配置参数的中文含义，还可以给参数设置默认值
+  >
+  > + @ApiImplicitParams：描述由多个 @ApiImplicitParam 注解的参数组成的请求参数列表
+
+
+## 7.保存文件-阿里OSS
+
++ 注册阿里:https://oss.console.aliyun.com/
+
++ 创建OSS服务
+
+  + 菜单栏->对象储存OSS->创建Bucket文件目录->权限修改为"公开"
+  + 进入Bucket目录的菜单栏的"概述"可以获取endpoint外网/内网
+    + 外网需要收费-级少
+    + 内网不收费
+
+  + 头像->AccessKey管理->获取AccessKey ID和Secret
+    + 创建临时:	xxx
+
++ 引入pom
+
+```xml
+<!-- 阿里云oss依赖 -->
+<dependency>
+    <groupId>com.aliyun.oss</groupId>
+    <artifactId>aliyun-sdk-oss</artifactId>
+    <version>2.8.3</version>
+</dependency>
+<!-- 时间插件-用于生成文件名-->
+<dependency>
+    <groupId>org.apache.commons</groupId>
+    <artifactId>commons-lang3</artifactId>
+    <version>3.9</version>
+</dependency>
+```
+
++ 自定义配置properties文件
+
+```properties
+#阿里Oss对象储存
+#访问网络来源
+oss.endpoint=oss-cn-beijing.aliyuncs.com
+#访问accessKey
+oss.accessKeyId=xxx
+#访问Secret
+oss.accessKeySecret=xxx
+#访问的bucket目录
+oss.bucketName=tmm-tommy
+```
+
+> 注意：
+>
+> + 可能会报警告，这个因为是自定义的，使用才报黄
+> + 处理keyId和Secret不一样
+> + 链接使用外网
+
++ 准备oss上传工具类
+
+```java
+@Component
+@Slf4j
+public class OssManagerUtil {
+    //------------------变量----------
+
+    @Value("${oss.endpoint}")
+    private String endpoint;
+    @Value("${oss.accessKeyId}")
+    private String accessKeyId;
+    @Value("${oss.accessKeySecret}")
+    private String accessKeySecret;
+    @Value("${oss.bucketName}")
+    private String bucketName;
+
+
+    private static String FILE_URL;
+
+    /**
+     * @param file     上传的文件
+     * @param upPath   上传的路径
+     * @param fileName 创建的文件名(包括后缀)
+     * @return
+     */
+    public String upLoad(File file, String upPath, String fileName) {
+
+        // 默认值为：true
+        boolean isImage = true;
+        // 判断所要上传的图片是否是图片，图片可以预览，其他文件不提供通过URL预览
+        try {
+            Image image = ImageIO.read(file);
+            isImage = image == null ? false : true;
+        } catch (IOException e) {
+            e.printStackTrace();
+        }
+
+        log.debug("------OSS文件上传开始--------" + file.getName());
+
+        // 文件名格式
+//        SimpleDateFormat sdf = new SimpleDateFormat("yyyyMMddhhmmss");
+//        String dateString = sdf.format(new Date()) + "." + suffix; // 20180322010634.jpg
+
+        // 判断文件
+        if (file == null) {
+            return null;
+        }
+        // 创建OSSClient实例。
+        OSSClient ossClient = new OSSClient(endpoint, accessKeyId, accessKeySecret);
+        try {
+            // 判断容器是否存在,不存在就创建
+            if (!ossClient.doesBucketExist(bucketName)) {
+                ossClient.createBucket(bucketName);
+                CreateBucketRequest createBucketRequest = new CreateBucketRequest(bucketName);
+                createBucketRequest.setCannedACL(CannedAccessControlList.PublicRead);
+                ossClient.createBucket(createBucketRequest);
+            }
+            // 设置文件路径和名称
+//            String fileUrl = fileHost + "/" + (dateString + "/" + UUID.randomUUID().toString().replace("-", "") + "-" + file.getName());
+            String fileUrl = upPath + "/" + fileName;
+            // 上传文件
+            PutObjectResult result = ossClient.putObject(new PutObjectRequest(bucketName, fileUrl, file));
+            // 设置权限(公开读)
+            ossClient.setBucketAcl(bucketName, CannedAccessControlList.PublicRead);
+            if (result != null) {
+                //上传成功后拼接地址
+                if (isImage) {//如果是图片，则图片的URL为：....
+                    FILE_URL = "https://" + bucketName + "." + endpoint + "/" + fileUrl;
+                } else {
+                    FILE_URL = fileUrl;
+                    log.debug("非图片,不可预览。文件路径为：" + fileUrl);
+                }
+                log.debug("------OSS文件上传成功------" + fileUrl);
+            }
+        } catch (OSSException oe) {
+            log.debug(oe.getMessage());
+        } catch (ClientException ce) {
+            log.debug(ce.getErrorMessage());
+        } finally {
+            if (ossClient != null) {
+                ossClient.shutdown();
+            }
+        }
+        return FILE_URL;
+    }
+
+    /**
+     * 通过文件名下载文件
+     *
+     * @param objectName    要下载的文件名
+     * @param localFileName 本地要创建的文件名
+     */
+    public void downloadFile(String objectName, String localFileName) {
+
+        // 创建OSSClient实例。
+        OSSClient ossClient = new OSSClient(endpoint, accessKeyId, accessKeySecret);
+        // 下载OSS文件到本地文件。如果指定的本地文件存在会覆盖，不存在则新建。
+        ossClient.getObject(new GetObjectRequest(bucketName, objectName), new File(localFileName));
+        // 关闭OSSClient。
+        ossClient.shutdown();
+    }
+
+    /**
+     * 删除文件
+     * objectName key 地址
+     *
+     * @param filePath
+     */
+    public Boolean delFile(String filePath) {
+        log.debug("删除开始，objectName=" + filePath);
+        // 创建OSSClient实例。
+        OSSClient ossClient = new OSSClient(endpoint, accessKeyId, accessKeySecret);
+
+        // 删除Object.
+        boolean exist = ossClient.doesObjectExist(bucketName, filePath);
+        if (!exist) {
+            log.debug("文件不存在,filePath={}", filePath);
+            return false;
+        }
+        log.debug("删除文件,filePath={}", filePath);
+        ossClient.deleteObject(bucketName, filePath);
+        ossClient.shutdown();
+        return true;
+    }
+
+    /**
+     * 批量删除
+     *
+     * @param keys
+     */
+    public Boolean delFileList(List<String> keys) {
+        // 创建OSSClient实例。
+        OSSClient ossClient = new OSSClient(endpoint, accessKeyId, accessKeySecret);
+        try {
+            // 删除文件。
+            DeleteObjectsResult deleteObjectsResult = ossClient.deleteObjects(new DeleteObjectsRequest(bucketName).withKeys(keys));
+            List<String> deletedObjects = deleteObjectsResult.getDeletedObjects();
+        } catch (Exception e) {
+            e.printStackTrace();
+            return false;
+        } finally {
+            ossClient.shutdown();
+        }
+        return true;
+
+    }
+
+    /**
+     * 获取文件夹
+     *
+     * @param fileName
+     * @return
+     */
+    public List<String> fileFolder(String fileName) {
+        // 创建OSSClient实例。
+        OSSClient ossClient = new OSSClient(endpoint, accessKeyId, accessKeySecret);
+        // 构造ListObjectsRequest请求。
+        ListObjectsRequest listObjectsRequest = new ListObjectsRequest(bucketName);
+        // 设置正斜线（/）为文件夹的分隔符。
+        listObjectsRequest.setDelimiter("/");   //文件文件夹
+        // 设置prefix参数来获取fun目录下的所有文件。
+        if (StringUtils.isNotBlank(fileName)) {
+            listObjectsRequest.setPrefix(fileName + "/");
+        }
+        // 列出文件
+        ObjectListing listing = ossClient.listObjects(listObjectsRequest);
+        // 遍历所有commonPrefix
+        List<String> list = new ArrayList<>();
+        for (String commonPrefix : listing.getCommonPrefixes()) {
+            String newCommonPrefix = commonPrefix.substring(0, commonPrefix.length() - 1);
+            String[] s = newCommonPrefix.split("/");
+            list.add(s[1]);
+        }
+        // 关闭OSSClient
+        ossClient.shutdown();
+        return list;
+    }
+
+    /**
+     * 列举文件下所有的文件url信息
+     */
+    public List<String> listFile(String fileHost) {
+        // 创建OSSClient实例。
+        OSSClient ossClient = new OSSClient(endpoint, accessKeyId, accessKeySecret);
+        // 构造ListObjectsRequest请求
+        ListObjectsRequest listObjectsRequest = new ListObjectsRequest(bucketName);
+
+        // 设置prefix参数来获取fun目录下的所有文件。
+        listObjectsRequest.setPrefix(fileHost + "/");
+        listObjectsRequest.setDelimiter("/");  //如果这个值为空,则获取文件夹里所有文件,包括子文件
+        // 列出文件。
+        ObjectListing listing = ossClient.listObjects(listObjectsRequest);
+        // 遍历所有文件。
+        List<String> list = new ArrayList<>();
+        for (int i = 0; i < listing.getObjectSummaries().size(); i++) {
+            if (i == 0) {
+                continue;
+            }
+            FILE_URL = "https://" + bucketName + "." + endpoint + "/" + listing.getObjectSummaries().get(i).getKey();
+            list.add(FILE_URL);
+        }
+        // 关闭OSSClient。
+        ossClient.shutdown();
+        return list;
+    }
+
+    /**
+     * 获得url链接
+     *
+     * @param objectName
+     * @return
+     */
+    public String getUrl(String objectName) {
+        // 创建OSSClient实例。
+        OSSClient ossClient = new OSSClient(endpoint, accessKeyId, accessKeySecret);
+        // 设置权限(公开读)
+        ossClient.setBucketAcl(bucketName, CannedAccessControlList.PublicRead);
+        // 设置图片处理样式。
+//        String style = "image/resize,m_fixed,w_100,h_100/rotate,90";
+        Date expiration = new Date(new Date().getTime() + 3600l * 1000 * 24 * 365 * 100);
+        GeneratePresignedUrlRequest req = new GeneratePresignedUrlRequest(bucketName, objectName, HttpMethod.GET);
+        req.setExpiration(expiration);
+//        req.setProcess(style);
+        URL signedUrl = ossClient.generatePresignedUrl(req);
+        // 关闭OSSClient。
+        log.debug("------OSS文件文件信息--------" + signedUrl.toString());
+        ossClient.shutdown();
+        if (signedUrl != null) {
+            return signedUrl.toString();
+        }
+        return null;
+    }
+
+    // 获取文 MultipartFile 文件后缀名工具
+    public static String getSuffix(MultipartFile fileupload) {
+        String originalFilename = fileupload.getOriginalFilename();
+        String suffix = originalFilename.substring(originalFilename.lastIndexOf(".") + 1);
+        System.out.println(suffix);
+        return suffix;
+    }
+
+    /**
+     * 创建文件夹
+     *
+     * @param folder
+     * @return
+     */
+    public String createFolder(String folder) {
+        // 创建OSSClient实例。
+        OSSClient ossClient = new OSSClient(endpoint, accessKeyId, accessKeySecret);
+        // 文件夹名
+        final String keySuffixWithSlash = folder;
+        // 判断文件夹是否存在，不存在则创建
+        if (!ossClient.doesObjectExist(bucketName, keySuffixWithSlash)) {
+            // 创建文件夹
+            ossClient.putObject(bucketName, keySuffixWithSlash, new ByteArrayInputStream(new byte[0]));
+            log.debug("创建文件夹成功");
+            // 得到文件夹名
+            OSSObject object = ossClient.getObject(bucketName, keySuffixWithSlash);
+            String fileDir = object.getKey();
+            ossClient.shutdown();
+            return fileDir;
+        }
+        return keySuffixWithSlash;
+    }
+
+
+}
+```
+
+> 注意：
+>
+> + 头部的加上注解Component
+> + 前方属性获取完美配置文件中的值
+
++ 准备一个文件工具类
+
+```java
+import org.springframework.util.ResourceUtils;
+import org.springframework.web.multipart.MultipartFile;
+
+import java.io.*;
+
+public class FileUtil {
+    /**
+     * MultipartFile 转 File
+     *
+     * @param file
+     * @throws Exception
+     */
+    public static File multipartFileToFile(MultipartFile file) throws Exception {
+
+        File toFile = null;
+        if (file.equals("") || file.getSize() <= 0) {
+            file = null;
+        } else {
+            InputStream ins = null;
+            ins = file.getInputStream();
+            toFile = new File(file.getOriginalFilename());
+            inputStreamToFile(ins, toFile);
+            ins.close();
+        }
+        return toFile;
+    }
+    //获取流文件
+    private static void inputStreamToFile(InputStream ins, File file) {
+        try {
+            OutputStream os = new FileOutputStream(file);
+            int bytesRead = 0;
+            byte[] buffer = new byte[8192];
+            while ((bytesRead = ins.read(buffer, 0, 8192)) != -1) {
+                os.write(buffer, 0, bytesRead);
+            }
+            os.close();
+            ins.close();
+        } catch (Exception e) {
+            e.printStackTrace();
+        }
+    }
+}
+
+```
+
++ 根据类的使用
+
+```java
+//注入工具类
+@Autowired
+OssManagerUtil ossManagerUtil;
+public void test(){
+    ossManagerUtil.upLoad(new File(), "test", "a.png");//上传文件
+    ossManagerUtil.delFile("tommy/img/a.png");//删除文件
+    List lists =  ossManagerUtil.listFile('tommy/img');//获取所有文件,并转为url
+    System.out.print(lists.toString())
+}
+```
+
+> https://+**bucket**+.**来源**/test/+图片
 
