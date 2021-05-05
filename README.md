@@ -1043,3 +1043,152 @@ public void test(){
 
 > https://+**bucket**+.**来源**/test/+图片
 
+## 8.整合Redis缓存
+
++ 安装
+
+  + key-value,非关系,数据库
+  + [服务器官网][http://www.redis.cn/]
+  + [客户端][https://github.com/uglide/RedisDesktopManager/releases/tag/0.9.3]
+
++ 引入
+
+  ```xml
+  <!--        redis缓存-->
+  <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-data-redis</artifactId>
+      <version>2.3.0.RELEASE</version>
+  </dependency>
+  ```
+
++ 配置(一般使用默认)
+
+```properties
+# Redis数据库索引（默认为0）
+spring.redis.database=0
+# Redis服务器地址
+spring.redis.host=127.0.0.1
+# Redis服务器连接端口
+spring.redis.port=6379
+# Redis服务器连接密码（默认为空）
+spring.redis.password=
+# 连接池最大连接数（使用负值表示没有限制）
+spring.redis.jedis.pool.max-active=20
+# 连接池最大阻塞等待时间（使用负值表示没有限制）
+spring.redis.jedis.pool.max-wait=-1
+# 连接池中的最大空闲连接
+spring.redis.jedis.pool.max-idle=10
+# 连接池中的最小空闲连接
+spring.redis.jedis.pool.min-idle=0
+# 连接超时时间（毫秒）
+spring.redis.timeout=1000
+```
+
++ 设置注解方式
+
+```java
+@SpringBootApplication
+@EnableCaching//设置注解方式
+public class TestDemoApplication {
+
+    public static void main(String[] args) {
+        SpringApplication.run(TestDemoApplication.class, args);
+    }
+
+}
+```
+
++ redis配置
+
+```java
+package com.example.testdemo.config;
+/**
+ * 配置缓存Redis对象为json
+ */
+@Configuration
+public class MyRedisConfig {
+
+    @Bean
+    public RedisTemplate<Object, Object> myRedisTemplate(RedisConnectionFactory redisConnectionFactory) throws UnknownHostException {
+        RedisTemplate<Object, Object> template = new RedisTemplate();
+        template.setConnectionFactory(redisConnectionFactory);
+        template.setDefaultSerializer(new Jackson2JsonRedisSerializer<Object>(Object.class));
+        return template;
+    }
+
+    @Primary//表示默认的主缓存管理器如果有多个缓存管理器，要指定一个默认的，否则报错
+    @Bean
+    public RedisCacheManager myCacheManager(RedisConnectionFactory factory){
+        Jackson2JsonRedisSerializer<Object> jsonRedisSerializer=new Jackson2JsonRedisSerializer<>(Object.class);
+        //解决查询缓存转换异常的问题
+        ObjectMapper om = new ObjectMapper();
+        om.setVisibility(PropertyAccessor.ALL, JsonAutoDetect.Visibility.ANY);
+        om.enableDefaultTyping(ObjectMapper.DefaultTyping.NON_FINAL);
+        jsonRedisSerializer.setObjectMapper(om);
+        //设置使用json存入缓存
+        RedisSerializer<String> redisSerializer = new StringRedisSerializer();
+        RedisCacheConfiguration configuration= RedisCacheConfiguration.defaultCacheConfig()
+                .serializeKeysWith(RedisSerializationContext.SerializationPair.fromSerializer(redisSerializer))
+                .serializeValuesWith(RedisSerializationContext.SerializationPair.fromSerializer(jsonRedisSerializer));
+//                .disableKeyPrefix() 隐藏key前缀 例如 emp::1 => 1
+//                .disableCachingNullValues();//不缓存空值
+        return RedisCacheManager.builder(factory)
+                .cacheDefaults(configuration)
+                .build();
+    }
+    @Bean
+    public StringRedisTemplate getStringRedisTemplate(RedisConnectionFactory connectionFactory){
+        StringRedisTemplate stringRedisTemplate = new StringRedisTemplate();
+        stringRedisTemplate.setConnectionFactory(connectionFactory);
+        return stringRedisTemplate;
+    }
+
+}
+
+```
+
++ 设置缓存
+
+```java
+@Service
+@CacheConfig(cacheNames = "User" ,cacheManager = "myCacheManager")
+public class MyUserService {
+    @Autowired
+    SqlMyUserDao sqlMyUserDao;
+    //查询
+    @Cacheable(value = "'findMyUserAll'")
+    public List<SqlMyUser> findMyUserAll(){
+        return sqlMyUserDao.findAll();
+    }
+    @Cacheable(value = "#id")
+    public SqlMyUser findByIdUser(int id){
+        return sqlMyUserDao.findById(id).get();
+    }
+
+    //删除
+    @Transactional
+    @CacheEvict(value = "#id")
+    public  void deleteByIdMyUser(Integer id){
+        sqlMyUserDao.deleteById(id);
+    }
+}
+
+```
+
+> + @Cacheable:保存
+>
+> + @CacheEvict:删除/清空
+>
+> + @CachePut:更新
+>
+> + key指定
+>
+>   | 名字         | 位置               | 描述             | 实例             |
+>   | ------------ | ------------------ | ---------------- | ---------------- |
+>   | methodName   | root object        | 当前调用的方法名 | #root.methodName |
+>   | argumentname | evaluation context | 方法参数,#参数   | #id              |
+>   | 自定义字符串 |                    |                  | '字符串'         |
+>   | ...          | ...                | ...              | ...              |
+
+## 9.scrity+jwt管理权限,negix...
